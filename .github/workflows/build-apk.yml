@@ -1,0 +1,100 @@
+name: Build APK
+
+# Builds the real installable debug APK and runs the JVM unit tests.
+# - On any branch push: APK is uploaded as a workflow artifact
+#   ("smart-optimize-debug-apk").
+# - On a version tag (v*): the APK is additionally attached to a
+#   GitHub Release so it stays downloadable permanently.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Assemble debug APK + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Provisions Gradle directly so the build also works even if the
+      # wrapper jar were ever missing from the repository.
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Install Android SDK packages (API 34)
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble debug APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify release configuration compiles (unsigned)
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: APK info
+        run: |
+          ls -lh app/build/outputs/apk/debug/
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | head -20
+          mkdir -p release-assets
+          VERSION="${GITHUB_REF_NAME}"
+          cp "$APK" "release-assets/SmartOptimize-${VERSION}-debug.apk"
+          ls -lh release-assets/
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-optimize-debug-apk
+          path: release-assets/*.apk
+          if-no-files-found: error
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Publish GitHub Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.apk
+          name: Smart Optimize ${{ github.ref_name }}
+          body: |
+            Installable debug build of **Smart Optimize** (signed with the
+            standard Android debug key — suitable for testing and sideloading,
+            not for Play Store distribution).
+
+            - Real RAM / storage / battery / device dashboard
+            - Background App Manager with Usage Access insights
+            - Foreground App Focus (guided, honest — no fake force-stop)
+            - Smart Optimize recommendations from measured data
+            - No INTERNET permission, no accounts, no ads, no tracking
+
+            See the repository README for the full report, limitations and
+            release-signing instructions.
