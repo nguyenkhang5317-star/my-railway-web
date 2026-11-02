@@ -1,12 +1,19 @@
 name: Build APK
 
 # Builds the real installable debug APK and runs the JVM unit tests.
-# The APK is uploaded as a workflow artifact named "smart-optimize-debug-apk".
+# - On any branch push: APK is uploaded as a workflow artifact
+#   ("smart-optimize-debug-apk").
+# - On a version tag (v*): the APK is additionally attached to a
+#   GitHub Release so it stays downloadable permanently.
 
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -47,11 +54,21 @@ jobs:
       - name: Verify release configuration compiles (unsigned)
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
+      - name: APK info
+        run: |
+          ls -lh app/build/outputs/apk/debug/
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | head -20
+          mkdir -p release-assets
+          VERSION="${GITHUB_REF_NAME}"
+          cp "$APK" "release-assets/SmartOptimize-${VERSION}-debug.apk"
+          ls -lh release-assets/
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: smart-optimize-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: release-assets/*.apk
           if-no-files-found: error
 
       - name: Upload unit test reports
@@ -61,3 +78,23 @@ jobs:
           name: unit-test-reports
           path: app/build/reports/tests/
           if-no-files-found: ignore
+
+      - name: Publish GitHub Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.apk
+          name: Smart Optimize ${{ github.ref_name }}
+          body: |
+            Installable debug build of **Smart Optimize** (signed with the
+            standard Android debug key — suitable for testing and sideloading,
+            not for Play Store distribution).
+
+            - Real RAM / storage / battery / device dashboard
+            - Background App Manager with Usage Access insights
+            - Foreground App Focus (guided, honest — no fake force-stop)
+            - Smart Optimize recommendations from measured data
+            - No INTERNET permission, no accounts, no ads, no tracking
+
+            See the repository README for the full report, limitations and
+            release-signing instructions.
